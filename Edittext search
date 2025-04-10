@@ -1,0 +1,820 @@
+
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.recyclerview.widget.RecyclerView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/searchResultRecycler"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:maxHeight="250dp"
+    android:background="@android:color/white"
+    android:elevation="8dp"
+    android:padding="8dp"/>
+
+package com.superapp_customer.view.fragment.busBooking
+
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.view.WindowManager
+import android.widget.EditText
+import android.widget.PopupWindow
+import android.widget.TextView
+import androidx.core.content.ContextCompat
+import androidx.core.widget.doAfterTextChanged
+import androidx.fragment.app.viewModels
+import androidx.lifecycle.LiveData
+import androidx.navigation.fragment.findNavController
+import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.ListAdapter
+import androidx.recyclerview.widget.RecyclerView
+import com.superapp_customer.R
+import com.superapp_customer.customClasses.singleClick.setOnSingleClickListener
+import com.superapp_customer.databinding.FragmentSearchBusesBinding
+import com.superapp_customer.mapper.busBooking.toRouteAndStopMapper
+import com.superapp_customer.model.api.ApiState
+import com.superapp_customer.model.api.observeData
+import com.superapp_customer.model.dataClass.base.BaseResponse
+import com.superapp_customer.model.dataClass.busBooking.AvailableRoutesResponse
+import com.superapp_customer.model.dataClass.busBooking.RouteAndStop
+import com.superapp_customer.util.AppUtils.printLog
+import com.superapp_customer.util.getDateOnGivenDay
+import com.superapp_customer.util.gone
+import com.superapp_customer.util.showDatePickerDialog
+import com.superapp_customer.util.visible
+import com.superapp_customer.view.adapter.BusesAdapter
+import com.superapp_customer.view.base.BaseFragment
+import com.superapp_customer.viewmodel.busBooking.BookingTime
+import com.superapp_customer.viewmodel.busBooking.BusBookingViewModel
+import dagger.hilt.android.AndroidEntryPoint
+
+@AndroidEntryPoint
+class SearchBusesFragment : BaseFragment<FragmentSearchBusesBinding>() {
+
+    lateinit var binding: FragmentSearchBusesBinding
+
+    private val busViewModel by viewModels<BusBookingViewModel>()
+
+    var isFromSelected = false
+    var isToSelected = false
+    private var popupWindow: PopupWindow? = null
+
+    override fun initialiseFragmentBaseViewModel() {}
+
+    override fun getLayoutId(): Int {
+        return R.layout.fragment_search_buses
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        binding = getViewDataBinding()
+
+        init()
+        clicks()
+        observerSearch()
+
+        searching()
+        setupSearchListener()
+    }
+
+    private fun init() {
+        binding.apply {
+
+
+//            // Handle text change for "From" location
+//            autoCompleteFrom.doAfterTextChanged {
+//                it?.toString()?.let { searchQuery ->
+//                    if (searchQuery.length >= 2 && !isFromSelected) {
+//                        busViewModel.fromLocation = searchQuery
+//                        busViewModel.getAvailableRoutesFrom()
+//                    }
+//                }
+//            }
+//
+//            // Handle text change for "To" location
+//            autoCompleteTo.doAfterTextChanged {
+//                it?.toString()?.let { searchQuery ->
+//                    if (searchQuery.length >= 2 && !isToSelected) {
+//                        busViewModel.toLocation = searchQuery
+//                        busViewModel.getAvailableRoutesTo()
+//                    }
+//                }
+//            }
+//
+//            // Reset "From" selected flag when the user starts typing again
+//            autoCompleteFrom.setOnFocusChangeListener { _, hasFocus ->
+//                if (hasFocus) {
+//                    isFromSelected = false
+//                }
+//            }
+//
+//            // Reset "To" selected flag when the user starts typing again
+//            autoCompleteTo.setOnFocusChangeListener { _, hasFocus ->
+//                if (hasFocus) {
+//                    isToSelected = false
+//                }
+//            }
+        }
+    }
+
+    private fun clicks() {
+        binding.apply {
+            imageView.setOnClickListener {
+                findNavController().popBackStack()
+            }
+
+            ivSwap.setOnClickListener {
+                performSwap()
+            }
+
+            clToday.setOnClickListener {
+                changeSelection(BookingTime.TODAY)
+                busViewModel.date = getDateOnGivenDay()
+            }
+
+            clTomorrow.setOnClickListener {
+                changeSelection(BookingTime.TOMORROW)
+                busViewModel.date = getDateOnGivenDay(1)
+                getDateOnGivenDay()
+            }
+
+            clCustomDate.setOnClickListener {
+                requireContext().showDatePickerDialog("E, d MMM") { date, apiDate ->
+                    binding.tvDateSelected.text = date
+                    busViewModel.date = apiDate
+                    changeSelection(BookingTime.CUSTOM)
+                }
+            }
+
+            cvFindBuses.setOnSingleClickListener {
+                if (validateFields()) {
+                    findAvailableRoutes()
+                }
+            }
+        }
+    }
+
+    private fun validateFields(): Boolean {
+        return true
+    }
+
+    private fun performSwap() {
+        binding.apply {
+            val textFrom = autoCompleteFrom.text.toString().trim()
+            val textTo = autoCompleteTo.text.toString().trim()
+
+            if (textFrom.isNotEmpty() && textTo.isNotEmpty()) {
+                autoCompleteFrom.setText(textTo)
+                autoCompleteTo.setText(textFrom)
+                val value = busViewModel.selectedFrom
+                busViewModel.selectedFrom = busViewModel.selectedTo
+                busViewModel.selectedTo = value
+                printLog("selectedFrom   ${busViewModel.selectedFrom}")
+                printLog("selectedTo   ${busViewModel.selectedTo}")
+            } else {
+                if (textFrom.isEmpty()) {
+                    autoCompleteFrom.error = getString(R.string.enter_boarding_location)
+                }
+                if (textTo.isEmpty()) {
+                    autoCompleteTo.error = getString(R.string.enter_destination)
+                }
+            }
+        }
+    }
+
+    private var textWatcher: TextWatcher? = null
+
+    private fun setupSearchListener() {
+        textWatcher = object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                val query = s.toString()
+
+                if (query.length >= 2) {
+                    busViewModel.fromLocation = query
+                    busViewModel.getAvailableRoutesTo()
+                } else {
+                    popupWindow?.dismiss()
+                }
+            }
+
+            override fun afterTextChanged(s: Editable?) {}
+        }
+
+        binding.autoCompleteTo.addTextChangedListener(textWatcher)
+    }
+
+//    private fun init() {
+//        binding.apply {
+//            editTextFrom.doAfterTextChanged {
+//                it?.toString()?.let { searchQuery ->
+//                    if (searchQuery.length >= 2 && !isFromSelected) {
+//                        // Trigger search only if not already selected
+//                        busViewModel.fromLocation = searchQuery
+//                        busViewModel.getAvailableRoutesFrom()
+//                        showSearchResults(searchQuery, true)
+//                    }
+//                }
+//            }
+//
+//            // Handle text change for "To" location
+//            editTextTo.doAfterTextChanged {
+//                it?.toString()?.let { searchQuery ->
+//                    if (searchQuery.length >= 2 && !isToSelected) {
+//                        busViewModel.toLocation = searchQuery
+//                        busViewModel.getAvailableRoutesTo()
+//                        showSearchResults(searchQuery, false)
+//                    }
+//                }
+//            }
+//        }
+//    }
+//
+//    private fun clicks() {
+//        binding.apply {
+//            imageView.setOnClickListener {
+//                findNavController().popBackStack()
+//            }
+//
+//            ivSwap.setOnClickListener {
+//                performSwap()
+//            }
+//
+//            // Reset search when user selects something from the search list
+//            busViewModel.availableRoutesFromList.observe(viewLifecycleOwner) { routes ->
+//                binding.resultLayout.removeAllViews() // Clear previous search results
+//                routes.forEach { route ->
+//                    val textView = TextView(requireContext()).apply {
+//                        text = route.name
+//                        setOnClickListener {
+//                            // Set the selected item in the EditText
+//                            editTextFrom.setText(route.name)
+//                            isFromSelected = true // Mark as selected
+//                            binding.resultLayout.removeAllViews() // Clear results
+//                        }
+//                    }
+//                    binding.resultLayout.addView(textView) // Add the new result
+//                }
+//            }
+//
+//            busViewModel.availableRoutesToList.observe(viewLifecycleOwner) { routes ->
+//                binding.resultLayout.removeAllViews() // Clear previous search results
+//                routes.forEach { route ->
+//                    val textView = TextView(requireContext()).apply {
+//                        text = route.name
+//                        setOnClickListener {
+//                            // Set the selected item in the EditText
+//                            editTextTo.setText(route.name)
+//                            isToSelected = true // Mark as selected
+//                            binding.resultLayout.removeAllViews() // Clear results
+//                        }
+//                    }
+//                    binding.resultLayout.addView(textView) // Add the new result
+//                }
+//            }
+//        }
+//    }
+//
+//    private fun showSearchResults(query: String, isFrom: Boolean) {
+//        if (isFrom) {
+//            busViewModel.searchRoutesFrom(query)
+//        } else {
+//            busViewModel.searchRoutesTo(query)
+//        }
+//    }
+
+    private fun findAvailableRoutes() {
+        busViewModel.findAvailableRoutes()
+        busViewModel.findRoutes.observeData(
+            lifecycle = viewLifecycleOwner,
+            onLoading = {
+                showProgressDialog()
+            },
+            onError = {
+                hideProgressDialog()
+                showToastShort(this)
+            },
+            onSuccess = {
+                hideProgressDialog()
+                binding.clNoBus.visible()
+                binding.rvBuses.gone()
+                this@observeData?.buses?.let { busList ->
+                    if (busList.isNotEmpty()) {
+                        binding.clNoBus.gone()
+                        binding.rvBuses.visible()
+                        binding.rvBuses.layoutManager = LinearLayoutManager(requireContext())
+                        binding.rvBuses.adapter = BusesAdapter(busList) { pos ->
+                            val action = SearchBusesFragmentDirections
+                                .actionSearchBusesFragmentToPassengerInfoFragment(busList[pos])
+                            findNavController().navigate(action)
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    private fun observerSearch() {
+//        observeLocationData(
+//            liveData = busViewModel.availableRoutes,
+//            updateList = { busViewModel.availableRoutesFromList = it },
+//            autoComplete = binding.autoCompleteFrom,
+//            getLocationName = {
+//                if (it.selectedRoute) it.startLocationName ?: "" else it.stopLocationName ?: ""
+//            },
+//            onItemClick = { pos ->
+//                isFromSelected = true // Mark as selected
+//                busViewModel.selectedLocation(pos, 1)
+//            }
+//        )
+
+        observeLocationData(
+            liveData = busViewModel.availableRoutesTo,
+            updateList = { busViewModel.availableRoutesToList = it },
+            autoComplete = binding.autoCompleteTo,
+            getLocationName = {
+                if (it.selectedRoute) it.endLocationName ?: "" else it.stopLocationName ?: ""
+            },
+            onItemClick = { pos ->
+                isToSelected = true // Mark as selected
+                busViewModel.selectedLocation(pos, 2)
+            }
+        )
+    }
+
+    private fun observeLocationData(
+        liveData: LiveData<ApiState<BaseResponse<AvailableRoutesResponse>>>,
+        updateList: (MutableList<RouteAndStop>) -> Unit,
+        autoComplete: EditText,
+        getLocationName: (RouteAndStop) -> String,
+        onItemClick: (Int) -> Unit
+    ) {
+        liveData.observeData(
+            lifecycle = viewLifecycleOwner,
+            onError = { showToastShort(this) },
+            onSuccess = {
+                val routes = this?.routes?.map { it.toRouteAndStopMapper() } ?: emptyList()
+                val stops = this?.stops?.map { it.toRouteAndStopMapper() } ?: emptyList()
+                val combinedList = (routes + stops).toMutableList()
+                updateList(combinedList)
+
+                showSearchPopup(autoComplete, combinedList)
+
+//                val adapter = ArrayAdapter(
+//                    requireContext(),
+//                    android.R.layout.simple_dropdown_item_1line,
+//                    combinedList.map(getLocationName)
+//                )
+//
+//                // Set adapter
+//                autoComplete.setAdapter(adapter)
+//
+//                // Listen for item selection
+//                autoComplete.setOnItemClickListener { _, _, position, _ ->
+//                    onItemClick(position)
+//                    autoComplete.setText(adapter.getItem(position).toString()) // Set the text of AutoComplete
+//                    autoComplete.dismissDropDown() // Dismiss dropdown once item is selected
+//                }
+//
+//                // Automatically request focus and show the dropdown
+//                if (!isFromSelected && !isToSelected) {
+//                    autoComplete.requestFocus()
+//                    autoComplete.showDropDown()
+//                }
+            }
+        )
+    }
+
+    private fun changeSelection(selection: BookingTime) {
+        val white = ContextCompat.getColor(requireContext(), R.color.white)
+        val selected = ContextCompat.getColor(requireContext(), R.color.theme_bus_page)
+        binding.clToday.strokeColor = white
+        binding.clTomorrow.strokeColor = white
+        binding.clCustomDate.strokeColor = white
+
+        when (selection) {
+            BookingTime.CUSTOM -> {
+                binding.clCustomDate.strokeColor = selected
+            }
+
+            BookingTime.TOMORROW -> {
+                binding.clTomorrow.strokeColor = selected
+            }
+
+            else -> {
+                binding.clToday.strokeColor = selected
+            }
+        }
+    }
+
+    private fun searching() {
+//        binding.autoCompleteTo.doAfterTextChanged {
+//            val query = it.toString()
+//            if (query.length >= 2) {
+//                busViewModel.fromLocation = query
+//                busViewModel.getAvailableRoutesTo()
+//            } else {
+//                popupWindow?.dismiss()
+//            }
+//        }
+
+//        viewModel.searchResults.observe(viewLifecycleOwner) { results ->
+//            if (results.isNotEmpty()) {
+//                showSearchPopup(searchEditText, results)
+//            } else {
+//                popupWindow?.dismiss()
+//            }
+//        }
+    }
+
+    private fun showSearchPopup(anchor: View, data: MutableList<RouteAndStop>) {
+        val inflater = LayoutInflater.from(anchor.context)
+        val popupView = inflater.inflate(R.layout.popup_search_list, null)
+        val recyclerView = popupView.findViewById<RecyclerView>(R.id.searchResultRecycler)
+
+        val adapter = SearchAdapter { selectedItem ->
+//            // handle click
+//            binding.autoCompleteTo.setText(selectedItem)
+//            popupWindow?.dismiss()
+
+            // Temporarily remove the watcher
+            textWatcher?.let { binding.autoCompleteTo.removeTextChangedListener(it) }
+
+            binding.autoCompleteTo.setText(selectedItem)
+            binding.autoCompleteTo.setSelection(selectedItem.length) // move cursor to end
+
+            popupWindow?.dismiss()
+
+            // Re-add the watcher after a short delay to avoid race conditions
+            Handler(Looper.getMainLooper()).postDelayed({
+                textWatcher?.let { binding.autoCompleteTo.addTextChangedListener(it) }
+            }, 200)
+        }
+        recyclerView.layoutManager = LinearLayoutManager(anchor.context)
+        recyclerView.adapter = adapter
+        adapter.submitList(data.map { it.startLocationName.toString() })
+
+        popupWindow = PopupWindow(
+            popupView,
+            anchor.width,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            true
+        ).apply {
+            isOutsideTouchable = true
+            isFocusable = true
+            elevation = 10f
+
+            showAsDropDown(anchor)
+        }
+    }
+
+    class SearchAdapter(
+        private val onItemClick: (String) -> Unit
+    ) : ListAdapter<String, SearchAdapter.SearchViewHolder>(DIFF_CALLBACK) {
+
+        companion object {
+            private val DIFF_CALLBACK = object : DiffUtil.ItemCallback<String>() {
+                override fun areItemsTheSame(oldItem: String, newItem: String): Boolean =
+                    oldItem == newItem
+
+                override fun areContentsTheSame(oldItem: String, newItem: String): Boolean =
+                    oldItem == newItem
+            }
+        }
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): SearchViewHolder {
+            val view = LayoutInflater.from(parent.context)
+                .inflate(android.R.layout.simple_list_item_1, parent, false)
+            return SearchViewHolder(view)
+        }
+
+        override fun onBindViewHolder(holder: SearchViewHolder, position: Int) {
+            holder.bind(getItem(position))
+        }
+
+        inner class SearchViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
+            private val textView: TextView = itemView.findViewById(android.R.id.text1)
+
+            fun bind(item: String) {
+                textView.text = item
+                itemView.setOnClickListener {
+                    onItemClick(item)
+                }
+            }
+        }
+    }
+
+}
+
+
+//@AndroidEntryPoint
+//class SearchBusesFragment : BaseFragment<FragmentSearchBusesBinding>() {
+//
+//    lateinit var binding: FragmentSearchBusesBinding
+//
+//    private val busViewModel by viewModels<BusBookingViewModel>()
+//
+//    var isFromSelected = false
+//    var isToSelected = false
+//
+//    override fun initialiseFragmentBaseViewModel() {
+//    }
+//
+//    override fun getLayoutId(): Int {
+//        return R.layout.fragment_search_buses
+//    }
+//
+//    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+//        super.onViewCreated(view, savedInstanceState)
+//        binding = getViewDataBinding()
+//
+//        init()
+//        clicks()
+//        observerSearch()
+//    }
+//
+//    private fun init() {
+//        binding.apply {
+////            binding.tvDateSelected.text = getDateOnGivenDay(2, "E, d MMM")
+//
+////            autoCompleteFrom.doAfterTextChanged {
+////                it?.toString()?.let { searchQuery ->
+////                    if (searchQuery.length >= 2) {
+////                        busViewModel.fromLocation = searchQuery
+////                        busViewModel.getAvailableRoutesFrom()
+////                    }
+////                }
+////            }
+//            autoCompleteFrom.doAfterTextChanged {
+//                it?.toString()?.let { searchQuery ->
+//                    // Only trigger search if the search query length is >= 2 and no item has been selected
+//                    if (searchQuery.length >= 2 && !isFromSelected) {
+//                        busViewModel.fromLocation = searchQuery
+//                        busViewModel.getAvailableRoutesFrom()
+//                    }
+//                }
+//            }
+//            autoCompleteTo.doAfterTextChanged {
+//                it?.toString()?.let { searchQuery ->
+//                    if (searchQuery.length >= 2 && !isToSelected) {
+//                        busViewModel.toLocation = searchQuery
+//                        busViewModel.getAvailableRoutesTo()
+//                    }
+//                }
+//            }
+//            binding.autoCompleteFrom.setOnFocusChangeListener { _, hasFocus ->
+//                if (hasFocus) {
+//                    isFromSelected = false
+//                }
+//            }
+//            binding.autoCompleteTo.setOnFocusChangeListener { _, hasFocus ->
+//                if (hasFocus) {
+//                    isToSelected = false
+//                }
+//            }
+//        }
+//    }
+//
+//    private fun clicks() {
+//        binding.apply {
+//            imageView.setOnClickListener {
+//                findNavController().popBackStack()
+//            }
+//
+//            ivSwap.setOnClickListener {
+//                performSwap()
+//            }
+//
+//            clToday.setOnClickListener {
+//                changeSelection(BookingTime.TODAY)
+//                busViewModel.date = getDateOnGivenDay()
+//            }
+//
+//            clTomorrow.setOnClickListener {
+//                changeSelection(BookingTime.TOMORROW)
+//                busViewModel.date = getDateOnGivenDay(1)
+//                getDateOnGivenDay()
+//            }
+//
+//            clCustomDate.setOnClickListener {
+//                requireContext().showDatePickerDialog("E, d MMM") { date, apiDate ->
+//                    binding.tvDateSelected.text = date
+//                    busViewModel.date = apiDate
+//                    changeSelection(BookingTime.CUSTOM)
+//                }
+//            }
+//
+//            cvFindBuses.setOnSingleClickListener {
+//                if (validateFields()) {
+//                    findAvailableRoutes()
+//                }
+//            }
+//        }
+//    }
+//
+//    private fun validateFields(): Boolean {
+//        return true
+//    }
+//
+//    private fun performSwap() {
+//        binding.apply {
+//            val textFrom = autoCompleteFrom.text.toString().trim()
+//            val textTo = autoCompleteTo.text.toString().trim()
+//
+//            if (textFrom.isNotEmpty() && textTo.isNotEmpty()) {
+//                autoCompleteFrom.setText(textTo)
+//                autoCompleteTo.setText(textFrom)
+//                val value = busViewModel.selectedFrom
+//                busViewModel.selectedFrom = busViewModel.selectedTo
+//                busViewModel.selectedTo = value
+//                printLog("selectedFrom   ${busViewModel.selectedFrom}")
+//                printLog("selectedTo   ${busViewModel.selectedTo}")
+//            } else {
+//                if (textFrom.isEmpty()) {
+//                    autoCompleteFrom.error = getString(R.string.enter_boarding_location)
+//                }
+//                if (textTo.isEmpty()) {
+//                    autoCompleteTo.error = getString(R.string.enter_destination)
+//                }
+//            }
+//        }
+//    }
+//
+//    private fun findAvailableRoutes() {
+//        busViewModel.findAvailableRoutes()
+//        busViewModel.findRoutes.observeData(
+//            lifecycle = viewLifecycleOwner,
+//            onLoading = {
+//                showProgressDialog()
+//            },
+//            onError = {
+//                hideProgressDialog()
+//                showToastShort(this)
+//            },
+//            onSuccess = {
+//                hideProgressDialog()
+//                binding.clNoBus.visible()
+//                binding.rvBuses.gone()
+//                this@observeData?.buses?.let { busList ->
+//                    if (busList.isNotEmpty()) {
+//                        binding.clNoBus.gone()
+//                        binding.rvBuses.visible()
+//                        binding.rvBuses.layoutManager = LinearLayoutManager(requireContext())
+//                        binding.rvBuses.adapter = BusesAdapter(busList) { pos ->
+//                            val action = SearchBusesFragmentDirections
+//                                .actionSearchBusesFragmentToPassengerInfoFragment(busList[pos])
+//                            findNavController().navigate(action)
+//                        }
+//                    }
+//                }
+//            }
+//        )
+//    }
+//
+////    private fun observerSearch() {
+////        busViewModel.availableRoutes.observeData(
+////            lifecycle = viewLifecycleOwner,
+////            onError = {
+////                showToastShort(this)
+////            },
+////            onSuccess = {
+////                val routes = this?.routes?.map { it.toRouteAndStopMapper() } ?: emptyList()
+////                val stops = this?.stops?.map { it.toRouteAndStopMapper() } ?: emptyList()
+////
+////                busViewModel.availableRoutesFromList = (routes + stops).toMutableList()
+////
+////                val adapterFrom = ArrayAdapter<String>(
+////                    requireContext(), android.R.layout.simple_dropdown_item_1line
+////                )
+////
+////                adapterFrom.clear()
+////                binding.autoCompleteFrom.setAdapter(adapterFrom)
+////                adapterFrom.addAll(busViewModel.availableRoutesFromList.map {
+////                    if (it.selectedRoute) it.startLocationName else it.stopLocationName
+////                })
+////                adapterFrom.notifyDataSetChanged()
+////
+////                binding.autoCompleteFrom.setOnItemClickListener { _, _, position, _ ->
+////                    busViewModel.selectedLocation(position, 1)
+////                }
+////            }
+////        )
+////        busViewModel.availableRoutesTo.observeData(
+////            lifecycle = viewLifecycleOwner,
+////            onError = {
+////                showToastShort(this)
+////            },
+////            onSuccess = {
+////                val routes = this?.routes?.map { it.toRouteAndStopMapper() } ?: emptyList()
+////                val stops = this?.stops?.map { it.toRouteAndStopMapper() } ?: emptyList()
+////                busViewModel.availableRoutesToList = (routes + stops).toMutableList()
+////
+////                val adapterTo = ArrayAdapter<String>(
+////                    requireContext(), android.R.layout.simple_dropdown_item_1line
+////                )
+////                adapterTo.clear()
+////                binding.autoCompleteTo.setAdapter(adapterTo)
+////                adapterTo.addAll(busViewModel.availableRoutesToList.map {
+////                    if (it.selectedRoute) it.endLocationName else it.stopLocationName
+////                })
+////                adapterTo.notifyDataSetChanged()
+////
+////                binding.autoCompleteTo.setOnItemClickListener { _, _, position, _ ->
+////                    busViewModel.selectedLocation(position, 2)
+////                }
+////            }
+////        )
+////    }
+//
+//    private fun observerSearch() {
+//        observeLocationData(
+//            liveData = busViewModel.availableRoutes,
+//            updateList = { busViewModel.availableRoutesFromList = it },
+//            autoComplete = binding.autoCompleteFrom,
+//            getLocationName = {
+//                if (it.selectedRoute) it.startLocationName ?: "" else it.stopLocationName ?: ""
+//            },
+//            onItemClick = { pos ->
+//                printLog("busViewModel.availableRoutesFromList   ${Gson().toJson(busViewModel.availableRoutesFromList)}")
+//                isFromSelected = true
+//                busViewModel.selectedLocation(pos, 1)
+//            }
+//        )
+//
+//        observeLocationData(
+//            liveData = busViewModel.availableRoutesTo,
+//            updateList = { busViewModel.availableRoutesToList = it },
+//            autoComplete = binding.autoCompleteTo,
+//            getLocationName = {
+//                if (it.selectedRoute) it.endLocationName ?: "" else it.stopLocationName ?: ""
+//            },
+//            onItemClick = { pos ->
+//                isToSelected = true
+//                busViewModel.selectedLocation(pos, 2)
+//            }
+//        )
+//    }
+//
+//    private fun observeLocationData(
+//        liveData: LiveData<ApiState<BaseResponse<AvailableRoutesResponse>>>,
+//        updateList: (MutableList<RouteAndStop>) -> Unit,
+//        autoComplete: AutoCompleteTextView,
+//        getLocationName: (RouteAndStop) -> String,
+//        onItemClick: (Int) -> Unit
+//    ) {
+//        liveData.observeData(
+//            lifecycle = viewLifecycleOwner,
+//            onError = { showToastShort(this) },
+//            onSuccess = {
+//                val routes = this?.routes?.map { it.toRouteAndStopMapper() } ?: emptyList()
+//                val stops = this?.stops?.map { it.toRouteAndStopMapper() } ?: emptyList()
+//                val combinedList = (routes + stops).toMutableList()
+//                updateList(combinedList)
+//
+//                val adapter = ArrayAdapter(
+//                    requireContext(),
+//                    android.R.layout.simple_dropdown_item_1line,
+//                    combinedList.map(getLocationName)
+//                )
+//
+//                autoComplete.setAdapter(adapter)
+//                autoComplete.setOnItemClickListener { _, _, position, _ ->
+//                    printLog("busViewModel.availableRoutesToList   ${Gson().toJson(busViewModel.availableRoutesToList)}")
+//
+//                    onItemClick(position)
+//                }
+//
+//                autoComplete.requestFocus()
+//                autoComplete.showDropDown()
+//            }
+//        )
+//    }
+//
+//    private fun changeSelection(selection: BookingTime) {
+//        val white = ContextCompat.getColor(requireContext(), R.color.white)
+//        val selected = ContextCompat.getColor(requireContext(), R.color.theme_bus_page)
+//        binding.clToday.strokeColor = white
+//        binding.clTomorrow.strokeColor = white
+//        binding.clCustomDate.strokeColor = white
+//
+//        when (selection) {
+//            BookingTime.CUSTOM -> {
+//                binding.clCustomDate.strokeColor = selected
+//            }
+//
+//            BookingTime.TOMORROW -> {
+//                binding.clTomorrow.strokeColor = selected
+//            }
+//
+//            else -> {
+//                binding.clToday.strokeColor = selected
+//            }
+//        }
+//    }
+//}
